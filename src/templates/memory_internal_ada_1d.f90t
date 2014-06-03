@@ -1,0 +1,200 @@
+!*
+!*
+!* Copyright (c) 2008-2013 Andre Severo Pereira Gomes <andre.gomes@univ-lille1.fr>
+!* All rights reserved.
+!*
+!* Redistribution and use in source and binary forms, with or without
+!* modification, are permitted provided that the following conditions
+!* are met:
+!* 1. Redistributions of source code must retain the above copyright
+!*    notice, this list of conditions and the following disclaimer.
+!* 2. Redistributions in binary form must reproduce the above copyright
+!*    notice, this list of conditions and the following disclaimer in the
+!*    documentation and/or other materials provided with the distribution.
+!*
+!* THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+!* ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+!* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+!* ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+!* FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+!* DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+!* OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+!* HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+!* LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+!* OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+!* SUCH DAMAGE.
+!*
+!*
+
+
+#definetype T C  complex
+#definetype T R  real
+#definetype T I  integer
+
+#definetype G A  allocatable, target  
+#definetype G P  pointer  
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!
+      module allocator_internal_<G>_1d_<T>
+      
+         use allocator_parameters
+         use allocator_cfg
+         use allocator_track_if
+         use allocator_eh
+         use allocator_internal_init_<T>
+
+         implicit none
+         
+         private
+ 
+         public dealloc_<G>_1d_<T>
+
+!        public alloc_<G>_1d_<T>
+!        interface alloc_<G>_1d_<T>
+!           module procedure alloc_<G>_normal_1d_<T>
+!           module procedure alloc_<G>_sliced_1d_<T>
+!        end interface alloc_<G>_1d_<T>
+         public alloc_<G>_normal_1d_<T>
+         public alloc_<G>_sliced_1d_<T>
+
+         contains
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 
+!
+! deallocation routines
+!
+            subroutine dealloc_<G>_1d_<T>(data, id)
+               integer                        :: status
+               character(len=*), optional     :: id
+               character(len=charArrayLength) :: local_id
+               integer(kind=klongint)         :: memAddr
+               @T(kind=k@T), @G :: data(:)
+
+               if (present(id)) then
+                  write (local_id,'(a)') id
+               else
+                  write (local_id,'(a)') 'unnamed variable'
+               endif
+
+               if ( varIsAlive<G>(data)) then
+                  call get_memory_address(data, memAddr)
+                  deallocate(data,stat=status)
+                  
+                  if ( status.ne.0 ) then
+                     call allocator_errorHandler(deallocateFailure, &
+     &                                           var_id=local_id)
+                  endif
+                  call allocator_track(memAddr,local_id)
+               else
+                  call allocator_errorHandler(alreadyDeallocated, &
+     &                                        var_id=local_id)
+               endif
+            end subroutine dealloc_<G>_1d_<T>
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 
+!
+! allocation routines 
+!
+
+!
+! one-dimension variable
+!
+            subroutine alloc_backend_<G>_1d_<T>(data,start_index,end_index,id)
+               integer                               :: size, status
+               integer                               :: start_index, end_index
+               character(len=*)                      :: id
+               integer(kind=klongint)                :: memAddr
+               @T(kind=k@T), @G :: data(:)
+              
+               size = end_index - start_index + 1
+               
+               if ( size .eq. 0 ) then 
+!
+! calls with same start and index are dummy calls
+! we go back to the caller after doing nothing
+!
+                  return
+!
+               else if (size.lt.0) then
+!
+! negative size calls are calls we can't satisfy (for instance, 
+! we want to set a buffer of a given size but there's nearly no 
+! memory left, or the size variable has under/overflowed
+!
+                  call allocator_errorHandler(negativeSizeCall,size, &
+     &                                        kind(data),var_id=id)
+!
+               endif
+!
+! now check if the size we want to allocate will still give less 
+! memory usage than what has been established as the ceiling 
+!
+               if ( .not. allocator_withinRange(size,kind(data)) ) then
+                     call allocator_errorHandler(reqMemoryOverLimit,size, &
+     &                                           kind(data),var_id=id)
+               endif
+
+
+               if (.not.varIsAlive<G>(data)) then
+                  allocate(data(start_index:end_index),stat=status)
+
+                  if ( status.ne.0 ) then
+                     call allocator_errorHandler(allocateFailure,size, &
+     &                                           kind(data),var_id=id)
+                  else
+!                    call initData_<T>(data,start_index,end_index)
+                     call get_memory_address(data, memAddr)
+                     call allocator_track(size,kind(data),memAddr,id)
+                  endif
+               else
+                  call allocator_errorHandler(alreadyAllocated,var_id=id)
+               endif
+
+            end subroutine alloc_backend_<G>_1d_<T>
+
+
+!
+! wrapper for the allocation routine
+! handling arrays with start indexes equal to one
+!
+            subroutine     alloc_<G>_normal_1d_<T>(data,size,id)
+               integer                               :: size
+               character(len=*), optional            :: id
+               character(len=charArrayLength)        :: local_id
+               @T(kind=k@T), @G :: data(:)
+
+               if (present(id)) then
+                  write (local_id,'(a)') id
+               else
+                  write (local_id,'(a)') 'unnamed variable'
+               endif
+               
+               call alloc_backend_<G>_1d_<T>(data,1,size,local_id) 
+
+            end subroutine alloc_<G>_normal_1d_<T>
+
+
+!
+! wrapper for the allocation routine
+! handling arrays with start indexes not equal to one
+!
+            subroutine     alloc_<G>_sliced_1d_<T>(data,start_index,end_index,id)
+               integer                               :: start_index, end_index
+               character(len=*), optional            :: id
+               character(len=charArrayLength)        :: local_id
+               @T(kind=k@T), @G :: data(:)
+
+               if (present(id)) then
+                  write (local_id,'(a)') id
+               else
+                  write (local_id,'(a)') 'unnamed variable'
+               endif
+
+               call alloc_backend_<G>_1d_<T>(data,start_index,end_index,local_id)
+
+            end subroutine alloc_<G>_sliced_1d_<T>
+
+      end module allocator_internal_<G>_1d_<T>
